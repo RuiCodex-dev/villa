@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import posixpath
 import time
 import yaml
 import json
@@ -1271,8 +1272,9 @@ class Cube:
         volume_filename = f"{self.z:05d}_{self.y:05d}_{self.x:05d}_volume.nrrd"
         mask_filename = f"{self.z:05d}_{self.y:05d}_{self.x:05d}_mask.nrrd"
 
-        volume_url = os.path.join(base_url, volume_filename)
-        mask_url = os.path.join(base_url, mask_filename)
+        # URLs always use '/'; os.path.join would insert a backslash on Windows.
+        volume_url = posixpath.join(base_url, volume_filename)
+        mask_url = posixpath.join(base_url, mask_filename)
         return volume_url, mask_url
     
     def load_data(self) -> Tuple[NDArray, NDArray]:
@@ -1322,21 +1324,25 @@ class Cube:
                         # Download the remote file
                         response = requests.get(url)
                         response.raise_for_status()  # Ensure we notice bad responses
-                        # Write the downloaded content to the temporary file with the same directory structure and filename
+                        # Write the downloaded content to the cache file, then read it
+                        # once the file is closed and fully flushed.
                         with open(temp_file_path, 'wb') as tmp_file:
                             tmp_file.write(response.content)
-
-                            array, _ = nrrd.read(temp_file_path)
+                        array, _ = nrrd.read(temp_file_path)
 
                 else:
                     response = requests.get(url)
                     response.raise_for_status()  # Ensure we notice bad responses
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                        tmp_file.write(response.content)
-                        temp_file_path = tmp_file.name
-                        # Read the NRRD file from the temporary file
-
-                        array, _ = nrrd.read(temp_file_path)
+                    # nrrd.read takes a file name, so the download goes through a
+                    # temporary file. It used to be created with delete=False and never
+                    # removed, leaving ~16 MB in the temp directory per uncached cube.
+                    tmp_file = tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False)
+                    try:
+                        with tmp_file:
+                            tmp_file.write(response.content)
+                        array, _ = nrrd.read(tmp_file.name)
+                    finally:
+                        os.remove(tmp_file.name)
 
             output.append(array)
 
